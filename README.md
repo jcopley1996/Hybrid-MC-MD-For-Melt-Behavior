@@ -12,3 +12,10 @@ An example command to start the simulation might thus look like:
 this would run a simulation where the solid and liquid start as pure phases, at temperature 1120K and place the outputs of the simulation in the folder "AuSi_85_1120"
 
 Please note that the desired folder must exist prior to executing the LAMMPS script
+
+The AuSi potential was developped by Starikov and colleagues and should be cited as:
+  S.V. Starikov, N.Y. Lopanitsyna, D.E. Smirnova, and S.V. Makarov (2018), "Atomistic simulation of Si-Au melt crystallization with novel interatomic potential", Computational Materials Science, 142, 303-311. DOI: 10.1016/j.commatsci.2017.09.054.
+
+The Cu-Ni potential was developped by Sheng and colleagues and should be cited as: 
+  H.W. Sheng, M.J. Kramer, A. Cadien, T. Fujita, M.W. Chen, Highly optimized embedded-atom-method potentials for fourteen fcc metals, Physical Review B 83 (13)(2011) 134118.
+  
