@@ -1,0 +1,215 @@
+
+# bin size for the interface profile
+# is used in the stienhasrd parameters section as well as others
+variable	binwidth		equal	0.01
+
+# pseudo-random number generator seed
+variable	seed			equal	70823
+
+# lattice details for the starting configuration
+variable	lattice			string	diamond
+variable	lattice_parameter	equal	5.43
+
+# Size of Box
+variable	lattice_number_x	equal   8
+variable	lattice_number_y	equal	8
+variable	lattice_number_z	equal	48
+
+# half of the box, running the long direction
+variable	lattice_number_z_split	equal	${frac}*${lattice_number_z}	# half of the box
+
+
+# thermodynamic state:
+variable        equil_pressure          equal   0.0001	# GPa
+
+# parameters that dictate the 2-phase equilibration protocol
+variable        equil_pressure_bar      equal   (${equil_pressure}*10000) # convert from GPa to Bar
+variable	solid_temperature		equal	200.
+variable	below_temperature	equal	${equil_temperature}-100
+variable	above_temperature	equal	${equil_temperature}+100
+variable	farabove_temperature	equal	${equil_temperature}+750
+
+# output frequency
+variable	traj_freq		equal	20000	# output traj this often
+variable	thermo_freq		equal	500	# output thermo this often
+
+units		metal
+atom_style	atomic
+# fully periodic
+boundary	p p p
+
+# energy conserving
+timestep	0.001  
+
+# set the lattice spacing and replicate (we're going to melt it anyway)
+lattice		${lattice} ${lattice_parameter} origin 0.1 0.1 0.1 orient x 1 0 0 orient y 0 1 0 orient z 0 0 1
+
+
+region		box block 0 ${lattice_number_x} 0 ${lattice_number_y} 0 ${lattice_number_z} units lattice
+
+
+# define the region for solid
+region		solid_reg block 0 ${lattice_number_x} 0 ${lattice_number_y} 0 ${lattice_number_z_split} side in units lattice
+
+# define the region for liquid
+region		liquid_reg block 0 ${lattice_number_x} 0 ${lattice_number_y} ${lattice_number_z_split} ${lattice_number_z} side in units lattice
+
+
+# populate the simulation box
+create_box      2 box
+create_atoms    1 region solid_reg
+create_atoms    1 region liquid_reg
+
+
+
+
+group		liquid dynamic all region liquid_reg
+
+group		solid dynamic all region solid_reg
+
+
+set     region solid_reg type/fraction 2 1 ${seed}
+
+set     region liquid_reg type/fraction 2 0 ${seed}
+
+
+
+# thermo and barostat damping freq
+variable	tdamp	equal	$(200.*dt)
+variable	pdamp	equal	$(500.*dt)
+
+
+# neighbor list
+neighbor        2.5 bin  # number (skin) is how far past force cutoff to look for neighbors, bin is search algorithm
+
+neigh_modify    every 1 delay 0 check yes # checks everytime if atom has moved half skin distance, if yes, builds new list
+
+
+# read in the potential
+pair_style      adp
+pair_coeff      * * AuSi.starikov.adp Au Si
+
+
+# output observables
+thermo_style	custom step time vol density temp etotal ke pe press spcpu
+thermo		${thermo_freq}
+thermo_modify	flush yes
+
+# energy minimization to start us off
+minimize	1.0e-4 1.0e-6 1000 10000
+
+# initial velocities are randomly sampled from a gaussian with constraint of 0 net linear and angular momentum
+velocity	all create ${solid_temperature} ${seed} dist gaussian mom yes rot yes
+
+
+# do a little velocity rescaling to remove any bad contacts
+# rescaling every step to get the temperature right, but remove bad contacts (atoms too close from weird initial velocities)
+dump		solid_dump        all custom ${traj_freq} ${folder}/cu.solid.lammpstrj x y z type mass id vx vy vz fx fy fz
+fix		solid_nve_rescale all temp/rescale 1 ${solid_temperature} ${solid_temperature} 1. 1.
+fix		solid_nve         all nve
+run		10000
+
+
+# quick test of energy conservation
+unfix		solid_nve_rescale
+run		20000
+
+# stabilize the solid structure NVT
+unfix           solid_nve
+fix             dyn_solid all nvt temp ${solid_temperature} ${solid_temperature} ${tdamp}
+run             50000
+
+
+# barostat the solid
+unfix           dyn_solid
+fix             dyn_solid all npt temp ${solid_temperature} ${solid_temperature} ${tdamp} iso ${equil_pressure_bar} ${equil_pressure_bar} ${pdamp}
+
+run             100000
+
+# warm the system to just below melting
+undump		solid_dump
+dump		warm_dump	all custom ${traj_freq} ${folder}/cu.warm.lammpstrj x y z type mass id vx vy vz fx fy fz
+unfix		dyn_solid
+fix             dyn_warm all npt temp ${solid_temperature} ${below_temperature} ${tdamp} iso ${equil_pressure_bar} ${equil_pressure_bar} ${pdamp}
+
+run		100000
+
+# melt the liquid region of the box
+undump		warm_dump
+dump		melt_dump	all custom ${traj_freq} ${folder}/cu.melt.lammpstrj x y z type mass id vx vy vz fx fy fz
+unfix		dyn_warm
+fix		dyn_freeze_solid solid setforce 0. 0. 0.
+fix             dyn_melt liquid npt temp ${below_temperature} ${farabove_temperature} ${tdamp} iso ${equil_pressure_bar} ${equil_pressure_bar} ${pdamp}
+
+
+run		100000
+
+
+unfix dyn_melt
+fix dyn_melt  liquid npt temp ${farabove_temperature} ${farabove_temperature} ${tdamp} iso ${equil_pressure_bar} ${equil_pressure_bar} ${pdamp}
+run 100000
+
+# cool the liquid to just above the melting temp
+unfix		dyn_melt
+fix         dyn_melt liquid npt temp ${farabove_temperature} ${above_temperature} ${tdamp} iso ${equil_pressure_bar} ${equil_pressure_bar} ${pdamp}
+
+
+run		100000
+
+
+# release the solid, bring to just below melting
+unfix		dyn_melt
+unfix		dyn_freeze_solid
+fix		dyn_freeze_liquid liquid setforce 0. 0. 0.
+
+fix             dyn_melt solid npt temp ${solid_temperature} ${below_temperature} ${tdamp} iso ${equil_pressure_bar} ${equil_pressure_bar} ${pdamp}
+
+run		100000
+
+# thermostat at the equil temperature, resolve any anisotropic stress
+unfix		dyn_freeze_liquid
+unfix		dyn_melt
+fix             dyn_melt all npt temp ${equil_temperature} ${equil_temperature} ${tdamp} aniso ${equil_pressure_bar} ${equil_pressure_bar} ${pdamp}
+
+# run		20000
+
+# start timestep counter back to 0 ahead of final averaging
+undump melt_dump
+
+reset_timestep	0
+
+# output observable with average temperature
+variable	temp_var	equal temp
+fix		temp_avg	all ave/time ${thermo_freq} 1 ${thermo_freq} v_temp_var ave window ${traj_freq}
+
+thermo_style	custom step time vol density f_temp_avg temp etotal ke pe press spcpu
+thermo		${thermo_freq}
+thermo		500
+thermo_modify	flush yes
+
+
+# Fix to generate Monte-Carlo swapping
+
+fix         mcswap all atom/swap 1000 60 ${seed} ${equil_temperature} types 1 2
+
+
+dump		equil_dump	all custom ${traj_freq} ${folder}/${folder}.lammpstrj x y z type mass id vx vy vz fx fy fz
+
+# Steinhard Q6 profile in z (bcc has n=8 neighbors vs. default n=12 for fcc)
+compute         q6_atom all orientorder/atom nnn 8 degrees 1 6
+compute         q6cc all chunk/atom bin/1d z ${binwidth} ${binwidth} units reduced
+
+fix             q6_avg all ave/chunk 10 1 ${traj_freq} q6cc c_q6_atom[1] ave one norm sample file ${folder}/${folder}_q6_profile.dat
+
+
+# NPH, barostat in z
+# unfix           dyn_melt
+# fix             dyn_equil all nph z ${equil_pressure_bar} ${equil_pressure_bar} $(1000.*dt)
+run		        5000000
+
+# write the final state
+write_restart	${folder}/AuSi.melt.restart
+
+
+# exit
+quit
